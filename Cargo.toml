@@ -1,0 +1,16 @@
+[package]
+name = "browser_picker"
+version = "0.1.0"
+edition = "2024"
+
+[profile.release]
+lto = true          # Enable Link Time Optimization (compiles everything together for speed)
+codegen-units = 1   # Compiles across fewer threads to allow better optimization
+panic = "abort"     # Removes unwinding code, shrinking the binary
+strip = true        # Strips debug symbols from the final binary
+
+[dependencies]
+gtk4 = "0.11.4"
+gio = "0.22"
+serde = {version= "1.0.229", features = ["derive"]}
+serde_json = "1.0.151"

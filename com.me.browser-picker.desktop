@@ -1,0 +1,18 @@
+[Desktop Entry]
+Categories=Network;WebBrowser;
+Comment=Choose which browser to open links with
+Exec=/usr/local/bin/browser_picker %u
+GenericName=Web Browser
+Icon=internet-web-browser-symbolic
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+Name=Browser Picker
+NoDisplay=false
+Path=
+PrefersNonDefaultGPU=false
+StartupNotify=true
+Terminal=false
+TerminalOptions=
+Type=Application
+Version=1.0
+X-KDE-SubstituteUID=false
+X-KDE-Username=
