@@ -1,0 +1,37 @@
+app-id: com.me.browser-picker
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: browser-picker
+
+finish-args:
+  # Display & Graphics
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Host Filesystem Access (To scan host & Flatpak browser .desktop files)
+  - --filesystem=host:ro
+  # IPC Permission to launch host processes from inside sandbox
+  - --talk-name=org.freedesktop.Flatpak
+  - --talk-name=org.freedesktop.portal.Desktop
+  - --talk-name=org.freedesktop.portal.OpenURI
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/browser-picker/cargo
+
+modules:
+  - name: browser-picker
+    buildsystem: simple
+    build-commands:
+      - cargo --offline install --locked --no-track --path . --root /app
+      - mv /app/bin/browser_picker /app/bin/browser-picker
+      - install -Dm644 com.me.browser-picker.desktop /app/share/applications/com.me.browser-picker.desktop
+      - install -Dm644 com.me.browser-picker.svg /app/share/icons/hicolor/scalable/apps/com.me.browser-picker.svg
+    sources:
+      - type: dir
+        path: .
+      - cargo-sources.json

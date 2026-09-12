@@ -1,7 +1,7 @@
 [Desktop Entry]
 Categories=Network;WebBrowser;
 Comment=Choose which browser to open links with
-Exec=/usr/local/bin/browser_picker %u
+Exec=browser-picker %u
 GenericName=Web Browser
 Icon=internet-web-browser-symbolic
 MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;

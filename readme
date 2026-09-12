@@ -1,0 +1,13 @@
+how to compile for flatpak:
+1. flatpak install flathub org.gnome.Platform//47 org.gnome.Sdk//47 org.freedesktop.Sdk.Extension.rust-stable//24.08
+2. sudo apt install flatpak-builder
+3. python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json
+4. flatpak-builder --user --install --force-clean build-dir com.me.browser-picker.yml
+5. flatpak run com.me.browser-picker "https://example.com"
+
+export a distributalbe:
+1. flatpak-builder --force-clean --repo=repo build-dir com.me.browser-picker.yml
+2. flatpak build-bundle repo browser-picker.flatpak com.me.browser-picker
+
+install:
+1. flatpak install --user browser-picker.flatpak
