@@ -1,5 +1,6 @@
 use gtk4::gdk;
 use gtk4::gio::{AppInfo, AppInfoCreateFlags};
+use gtk4::glib;
 use gtk4::pango::{EllipsizeMode, WrapMode};
 use gtk4::prelude::*;
 use gtk4::{
@@ -7,9 +8,12 @@ use gtk4::{
     Label, Orientation, ToggleButton,
 };
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use crate::browser_manager::desktop_parser::DesktopApp;
+use crate::host;
 use crate::settings_manager::BrowserPickerSettings;
 
 pub fn build_ui(app: &Application, url: &str, settings: BrowserPickerSettings, settings_path: PathBuf) {
@@ -220,11 +224,7 @@ fn draw_browser_list(
 
             if is_installed {
                 if let Some(ref icon_name) = browser_setting.app_data.icon {
-                    let image = if icon_name.starts_with('/') && Path::new(icon_name).exists() {
-                        Image::from_file(icon_name)
-                    } else {
-                        Image::from_icon_name(icon_name)
-                    };
+                    let image = load_icon(icon_name);
                     image.set_pixel_size(24);
                     btn_content.append(&image);
                 }
@@ -254,13 +254,7 @@ fn draw_browser_list(
             let url_clone = url.clone();
             let path_clone = path_key.clone();
             let p_clone = settings_path.clone();
-            let desktop_file_name = browser_setting
-                .app_data
-                .path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
+            let app_data = browser_setting.app_data.clone();
 
             btn_browser.connect_clicked(move |_| {
                 if is_edit_mode {
@@ -269,11 +263,34 @@ fn draw_browser_list(
                     }
                     draw_browser_list(&c_clone, &app_clone, &url_clone, &s_clone, &p_clone, true);
                 } else if is_installed {
-                    launch_app(&app_clone, &url_clone, &desktop_file_name, None);
+                    launch_app(&app_clone, &url_clone, &app_data, None);
                 }
             });
 
-            row_box.append(&btn_browser);
+            if is_edit_mode {
+                // Show which desktop file this entry comes from above the browser button
+                let browser_box = GtkBox::builder()
+                    .orientation(Orientation::Vertical)
+                    .spacing(2)
+                    .hexpand(true)
+                    .valign(Align::Center)
+                    .build();
+
+                let path_label = Label::builder()
+                    .label(path_key.as_str())
+                    .tooltip_text(path_key.as_str())
+                    .ellipsize(EllipsizeMode::Middle)
+                    .halign(Align::Start)
+                    .build();
+                path_label.add_css_class("caption");
+                path_label.add_css_class("dim-label");
+
+                browser_box.append(&path_label);
+                browser_box.append(&btn_browser);
+                row_box.append(&browser_box);
+            } else {
+                row_box.append(&btn_browser);
+            }
 
             // 3. Right Side Controls
             if !is_installed {
@@ -394,6 +411,7 @@ fn draw_browser_list(
                         let p_c3 = settings_path.clone();
                         let path_k3 = path_key.clone();
                         let act_id = action_config.id.clone();
+                        let app_data = browser_setting.app_data.clone();
 
                         btn_action.connect_clicked(move |_| {
                             if is_edit_mode {
@@ -404,7 +422,7 @@ fn draw_browser_list(
                                 }
                                 draw_browser_list(&c_c3, &app_c, &url_c, &s_c3, &p_c3, true);
                             } else if let Some(exec) = &exec_string {
-                                launch_app(&app_c, &url_c, "", Some(exec));
+                                launch_app(&app_c, &url_c, &app_data, Some(exec));
                             }
                         });
 
@@ -450,7 +468,78 @@ fn draw_browser_list(
     }
 }
 
-fn launch_app(app: &Application, url: &str, desktop_id: &str, custom_exec: Option<&str>) {
+fn load_icon(icon_name: &str) -> Image {
+    if icon_name.starts_with('/') && Path::new(icon_name).exists() {
+        return Image::from_file(icon_name);
+    }
+
+    let in_icon_theme = gdk::Display::default()
+        .map(|display| gtk4::IconTheme::for_display(&display).has_icon(icon_name))
+        .unwrap_or(false);
+
+    // Inside a flatpak icons of other flatpaks (and absolute paths) are usually not visible
+    if !in_icon_theme && host::is_flatpak() {
+        if let Some(texture) = load_host_icon(icon_name) {
+            return Image::from_paintable(Some(&texture));
+        }
+    }
+
+    Image::from_icon_name(icon_name)
+}
+
+fn load_host_icon(icon_name: &str) -> Option<gdk::Texture> {
+    thread_local! {
+        static CACHE: RefCell<HashMap<String, Option<gdk::Texture>>> = RefCell::new(HashMap::new());
+    }
+
+    if let Some(cached) = CACHE.with_borrow(|cache| cache.get(icon_name).cloned()) {
+        return cached;
+    }
+
+    // Prints the contents of the best matching icon file from the hicolor theme or pixmaps
+    let script = r#"
+        name=$1; shift
+        case $name in /*) exec cat "$name";; esac
+        for dir in "$@"; do
+            for size in scalable 512x512 256x256 192x192 128x128 96x96 64x64 48x48 32x32 24x24 16x16; do
+                for ext in svg png; do
+                    file="$dir/icons/hicolor/$size/apps/$name.$ext"
+                    [ -f "$file" ] && exec cat "$file"
+                done
+            done
+            for ext in svg png xpm; do
+                file="$dir/pixmaps/$name.$ext"
+                [ -f "$file" ] && exec cat "$file"
+            done
+        done
+        exit 1"#;
+
+    let dirs: Vec<String> = host::data_dirs().iter().map(|d| d.to_string_lossy().to_string()).collect();
+    let mut args = vec![icon_name];
+    args.extend(dirs.iter().map(String::as_str));
+
+    let texture = host::capture(script, &args)
+        .and_then(|bytes| gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).ok());
+
+    CACHE.with_borrow_mut(|cache| cache.insert(icon_name.to_string(), texture.clone()));
+    texture
+}
+
+fn launch_app(app: &Application, url: &str, browser: &DesktopApp, custom_exec: Option<&str>) {
+    if host::is_flatpak() {
+        launch_on_host(url, browser, custom_exec);
+        app.quit();
+        return;
+    }
+
+    let desktop_id = browser
+        .path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let desktop_id = desktop_id.as_str();
+
     let display = gdk::Display::default().expect("Could not get display");
     let launch_context = display.app_launch_context();
     let uris = if url.is_empty() { vec![] } else { vec![url] };
@@ -495,4 +584,28 @@ fn launch_app(app: &Application, url: &str, desktop_id: &str, custom_exec: Optio
     }
 
     app.quit();
+}
+
+// Host apps can't be started from inside the flatpak sandbox, so run their Exec= on the host
+fn launch_on_host(url: &str, browser: &DesktopApp, custom_exec: Option<&str>) {
+    let Some(exec) = custom_exec.or(browser.exec.as_deref()) else {
+        eprintln!("No Exec= found in {}", browser.path.to_string_lossy());
+        return;
+    };
+
+    let Some(argv) = crate::browser_manager::desktop_parser::expand_exec(exec, url, browser) else {
+        eprintln!("Could not build a command from Exec={}", exec);
+        return;
+    };
+
+    let cwd = browser
+        .work_path
+        .as_ref()
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(glib::home_dir);
+
+    if let Err(e) = host::spawn(&argv, &cwd) {
+        eprintln!("Failed to launch {:?} on the host: {}", argv, e);
+    }
 }

@@ -11,8 +11,6 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri
-  # Host Filesystem Access (To scan host & Flatpak browser .desktop files)
-  - --filesystem=host:ro
   # IPC Permission to launch host processes from inside sandbox
   - --talk-name=org.freedesktop.Flatpak
   - --talk-name=org.freedesktop.portal.Desktop

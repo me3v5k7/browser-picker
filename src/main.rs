@@ -4,6 +4,7 @@ use gtk4::Application;
 use std::env;
 
 mod browser_manager;
+mod host;
 mod settings_manager;
 mod ui_manager;
 

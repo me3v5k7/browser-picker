@@ -3,16 +3,101 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn get_all_desktop_files(dirs: &HashSet<String>, suffix: &str) -> Vec<PathBuf> {
+use crate::host;
+
+pub struct DesktopFile {
+    pub id: String,         // Desktop file ID, e.g. "org.mozilla.firefox.desktop"
+    pub path: PathBuf,      // Path of the file on the host
+    pub contents: String,
+}
+
+// Finds all .desktop files in <data dir><suffix> for every XDG data dir. If the same desktop file ID
+// exists in several dirs, only the one from the dir with the highest precedence is kept (as per spec).
+pub fn get_all_desktop_files(dirs: &[PathBuf], suffix: &str) -> Vec<DesktopFile> {
+    let files = if host::is_flatpak() {
+        read_host_desktop_files(dirs, suffix)
+    } else {
+        read_local_desktop_files(dirs, suffix)
+    };
+
+    let mut seen_ids = HashSet::new();
+    files
+        .into_iter()
+        .filter(|file| seen_ids.insert(file.id.clone()))
+        .collect()
+}
+
+fn read_local_desktop_files(dirs: &[PathBuf], suffix: &str) -> Vec<DesktopFile> {
     let mut desktop_files = Vec::new();
 
     for dir in dirs {
-        let combined_path_string = String::from(dir) + suffix;
-        let path = Path::new(&combined_path_string);
-        visit_rec_dirs(path, &mut desktop_files);
+        let base_path = PathBuf::from(dir.to_string_lossy().to_string() + suffix);
+        let mut paths = Vec::new();
+        visit_rec_dirs(&base_path, &mut paths);
+
+        for path in paths {
+            let Ok(bytes) = fs::read(&path) else {
+                println!("Error reading file {}", path.to_string_lossy());
+                continue;
+            };
+
+            desktop_files.push(DesktopFile {
+                id: desktop_file_id(&base_path, &path),
+                contents: String::from_utf8_lossy(&bytes).to_string(),
+                path,
+            });
+        }
     }
 
     return desktop_files;
+}
+
+// Inside a flatpak most host dirs are either hidden or mounted elsewhere, so the files are listed
+// and read on the host in a single call
+fn read_host_desktop_files(dirs: &[PathBuf], suffix: &str) -> Vec<DesktopFile> {
+    // Prints "<base dir>\0<file path>\0<file contents>\0" for every desktop file
+    let script = r#"
+        suffix=$1; shift
+        for dir in "$@"; do
+            [ -d "$dir$suffix" ] || continue
+            find -L "$dir$suffix" -type f -name '*.desktop' -exec sh -c '
+                base=$1; shift
+                for file in "$@"; do
+                    printf "%s\0%s\0" "$base" "$file"
+                    cat "$file"
+                    printf "\0"
+                done' sh "$dir$suffix" {} +
+        done"#;
+
+    let dir_strings: Vec<String> = dirs.iter().map(|d| d.to_string_lossy().to_string()).collect();
+    let mut args = vec![suffix];
+    args.extend(dir_strings.iter().map(String::as_str));
+
+    let Some(output) = host::capture(script, &args) else {
+        println!("Error reading desktop files from the host");
+        return Vec::new();
+    };
+
+    let output = String::from_utf8_lossy(&output);
+    let mut fields = output.split('\0');
+    let mut desktop_files = Vec::new();
+
+    while let (Some(base), Some(path), Some(contents)) = (fields.next(), fields.next(), fields.next()) {
+        let path = PathBuf::from(path);
+        desktop_files.push(DesktopFile {
+            id: desktop_file_id(Path::new(base), &path),
+            path,
+            contents: contents.to_string(),
+        });
+    }
+
+    return desktop_files;
+}
+
+// The desktop file ID is the path relative to the applications dir with "/" replaced by "-"
+fn desktop_file_id(base_path: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(base_path).unwrap_or(path);
+    relative.to_string_lossy().replace('/', "-")
 }
 
 fn visit_rec_dirs(dir: &Path, desktop_files: &mut Vec<PathBuf>) {
@@ -39,31 +124,4 @@ fn visit_rec_dirs(dir: &Path, desktop_files: &mut Vec<PathBuf>) {
             }
         }
     }
-}
-
-
-pub fn get_desktop_dirs() -> HashSet<String> {
-    let xdg_data_dirs_result = std::env::var("XDG_DATA_DIRS");
-    let xdg_data_home_result = std::env::var("XDG_DATA_HOME");
-
-    if xdg_data_dirs_result.is_err() {
-        println!("Environment variable XDG_DATA_DIRS not defined");
-    }
-    let xdg_data_dirs_string = xdg_data_dirs_result.unwrap_or(String::from(""));
-
-    if xdg_data_home_result.is_err() {
-        println!("Environment variable XDG_DATA_HOME not defined");
-    }
-    let xdg_data_home_string = xdg_data_home_result.unwrap_or(String::from(""));
-
-    let xdg_data_dirs = xdg_data_dirs_string.split(":");
-    let xdg_data_home = xdg_data_home_string.split(":");
-
-    let desktop_dirs: HashSet<String> = xdg_data_dirs
-        .chain(xdg_data_home)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
-
-    return desktop_dirs;
 }

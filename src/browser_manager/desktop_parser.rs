@@ -1,6 +1,5 @@
+use gtk4::glib;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 // Helper struct to store the details of each action
@@ -35,10 +34,7 @@ pub struct DesktopApp {
     pub hidden: bool,             // Hidden= (true if file was deleted/disabled by user)
 }
 
-pub fn parse_and_filter_app(path: &Path, target_categories: &[&str], show_hidden_and_nodisplay: bool) -> Option<DesktopApp> {
-    let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
-
+pub fn parse_and_filter_app(path: &Path, contents: &str, target_categories: &[&str], show_hidden_and_nodisplay: bool) -> Option<DesktopApp> {
     let mut app = DesktopApp {
         path: path.to_path_buf(),
         ..Default::default()
@@ -47,7 +43,7 @@ pub fn parse_and_filter_app(path: &Path, target_categories: &[&str], show_hidden
     // Track which [Section] we are currently reading
     let mut current_section = String::new();
 
-    for line in reader.lines().flatten() {
+    for line in contents.lines() {
         let line = line.trim();
 
         // Skip blank lines and comments
@@ -129,4 +125,76 @@ fn parse_list(raw_value: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect()
+}
+
+// Turns an Exec= value into an argument list, replacing the field codes as described in
+// https://specifications.freedesktop.org/desktop-entry-spec/latest/exec-variables.html
+pub fn expand_exec(exec: &str, url: &str, app: &DesktopApp) -> Option<Vec<String>> {
+    // Undo the general string escaping first, the rest of the quoting rules match the shell ones
+    let mut unescaped = String::new();
+    let mut chars = exec.chars();
+    while let Some(c) = chars.next() {
+        match (c, chars.clone().next()) {
+            ('\\', Some('\\')) => { unescaped.push('\\'); chars.next(); }
+            ('\\', Some('s')) => { unescaped.push(' '); chars.next(); }
+            _ => unescaped.push(c),
+        }
+    }
+    let exec = unescaped;
+    let parsed = glib::shell_parse_argv(&exec)
+        .inspect_err(|err| println!("Error parsing Exec={}: {}", exec, err))
+        .ok()?;
+
+    let mut argv = Vec::new();
+    let mut has_url_code = false;
+
+    for arg in parsed {
+        let arg = arg.to_string_lossy();
+
+        // Codes that take up a whole argument and may expand to zero or several arguments
+        match arg.as_ref() {
+            "%u" | "%U" | "%f" | "%F" => {
+                has_url_code = true;
+                if !url.is_empty() {
+                    argv.push(url.to_string());
+                }
+                continue;
+            }
+            "%i" => {
+                if let Some(icon) = &app.icon {
+                    argv.push("--icon".to_string());
+                    argv.push(icon.clone());
+                }
+                continue;
+            }
+            _ => {}
+        }
+
+        let mut expanded = String::new();
+        let mut chars = arg.chars();
+        while let Some(c) = chars.next() {
+            if c != '%' {
+                expanded.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('%') => expanded.push('%'),
+                Some('u' | 'U' | 'f' | 'F') => {
+                    has_url_code = true;
+                    expanded.push_str(url);
+                }
+                Some('c') => expanded.push_str(&app.name),
+                Some('k') => expanded.push_str(&app.path.to_string_lossy()),
+                _ => {} // Deprecated or unknown codes are removed
+            }
+        }
+        argv.push(expanded);
+    }
+
+    // Some actions (e.g. "firefox --private-window") don't take a url, pass it anyway
+    if !has_url_code && !url.is_empty() {
+        argv.push(url.to_string());
+    }
+
+    if argv.is_empty() { None } else { Some(argv) }
 }
