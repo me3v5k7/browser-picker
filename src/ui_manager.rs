@@ -5,7 +5,7 @@ use gtk4::pango::{EllipsizeMode, WrapMode};
 use gtk4::prelude::*;
 use gtk4::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, GestureClick, Image, Justification,
-    Label, Orientation, ToggleButton,
+    Label, Orientation, Overlay, SizeGroup, SizeGroupMode, ToggleButton, Widget,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -20,6 +20,7 @@ pub fn build_ui(app: &Application, url: &str, settings: BrowserPickerSettings, s
     let window = ApplicationWindow::builder()
         .application(app)
         .title("Open with")
+        .icon_name("com.me.browser-picker")
         .default_width(480)
         .resizable(false)
         .build();
@@ -31,6 +32,15 @@ pub fn build_ui(app: &Application, url: &str, settings: BrowserPickerSettings, s
         }
     });
 
+    // Theme independent way of making a button more compact than the default
+    let css_provider = gtk4::CssProvider::new();
+    css_provider.load_from_data("button.small-button { min-height: 0; padding: 2px 8px; }");
+    gtk4::style_context_add_provider_for_display(
+        &WidgetExt::display(&window),
+        &css_provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
     let main_vbox = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(12)
@@ -39,6 +49,16 @@ pub fn build_ui(app: &Application, url: &str, settings: BrowserPickerSettings, s
         .margin_start(16)
         .margin_end(16)
         .build();
+
+    let edit_bar_box = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .halign(Align::Start)
+        .build();
+
+    let edit_toggle = ToggleButton::with_label("Edit Settings");
+    edit_toggle.add_css_class("small-button");
+    edit_bar_box.append(&edit_toggle);
+    main_vbox.append(&edit_bar_box);
 
     let label_url = Label::builder()
         .label(if url.is_empty() { "No link provided" } else { url })
@@ -68,15 +88,6 @@ pub fn build_ui(app: &Application, url: &str, settings: BrowserPickerSettings, s
     label_url.add_controller(gesture);
 
     main_vbox.append(&label_url);
-
-    let edit_bar_box = GtkBox::builder()
-        .orientation(Orientation::Horizontal)
-        .halign(Align::End)
-        .build();
-
-    let edit_toggle = ToggleButton::with_label("Edit Settings");
-    edit_bar_box.append(&edit_toggle);
-    main_vbox.append(&edit_bar_box);
 
     let list_container = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -159,9 +170,14 @@ fn draw_browser_list(
                 row_box.set_opacity(0.6);
             }
 
-            // 1. Browser Order Buttons (Up / Down)
-            if is_edit_mode {
-                let order_box = GtkBox::builder().orientation(Orientation::Vertical).build();
+            // 1. Browser Order Buttons (Up / Down), shown inside the browser button
+            let order_box = if is_edit_mode {
+                let order_box = GtkBox::builder()
+                    .orientation(Orientation::Vertical)
+                    .halign(Align::Start)
+                    .valign(Align::Center)
+                    .margin_start(4)
+                    .build();
                 let btn_up = Button::with_label("▲");
                 let btn_down = Button::with_label("▼");
 
@@ -197,8 +213,10 @@ fn draw_browser_list(
 
                 order_box.append(&btn_up);
                 order_box.append(&btn_down);
-                row_box.append(&order_box);
-            }
+                Some(order_box)
+            } else {
+                None
+            };
 
             // 2. Main Browser Button
             let display_name = if !browser_setting.saved_name.is_empty() {
@@ -212,7 +230,7 @@ fn draw_browser_list(
             let btn_browser = Button::builder()
                 .hexpand(true)
                 .height_request(48)
-                .valign(Align::Center)
+                .valign(Align::Fill)
                 .build();
 
             let btn_content = GtkBox::builder()
@@ -246,7 +264,45 @@ fn draw_browser_list(
                 btn_content.append(&uninstalled_badge);
             }
 
-            btn_browser.set_child(Some(&btn_content));
+            // The edit controls are layered on top of the button instead of being put inside it,
+            // otherwise clicking them would also count as a click on the button
+            let browser_overlay = Overlay::builder()
+                .child(&btn_browser)
+                .hexpand(true)
+                .valign(Align::Fill)
+                .build();
+
+            if let Some(order_box) = order_box {
+                // Show which desktop file this entry comes from above the browser name and logo
+                let path_label = Label::builder()
+                    .label(path_key.as_str())
+                    .tooltip_text(path_key.as_str())
+                    .ellipsize(EllipsizeMode::Middle)
+                    .halign(Align::Start)
+                    .margin_start(6)
+                    .margin_end(6)
+                    .build();
+                path_label.add_css_class("caption");
+                path_label.add_css_class("dim-label");
+
+                let info_box = GtkBox::builder()
+                    .orientation(Orientation::Vertical)
+                    .spacing(2)
+                    .hexpand(true)
+                    .valign(Align::Center)
+                    .build();
+                info_box.append(&path_label);
+                info_box.append(&btn_content);
+
+                let edit_content = GtkBox::builder().orientation(Orientation::Horizontal).build();
+                edit_content.append(&placeholder_for(&order_box));
+                edit_content.append(&info_box);
+
+                btn_browser.set_child(Some(&edit_content));
+                browser_overlay.add_overlay(&order_box);
+            } else {
+                btn_browser.set_child(Some(&btn_content));
+            }
 
             let s_clone = settings_rc.clone();
             let c_clone = container.clone();
@@ -267,37 +323,14 @@ fn draw_browser_list(
                 }
             });
 
-            if is_edit_mode {
-                // Show which desktop file this entry comes from above the browser button
-                let browser_box = GtkBox::builder()
-                    .orientation(Orientation::Vertical)
-                    .spacing(2)
-                    .hexpand(true)
-                    .valign(Align::Center)
-                    .build();
-
-                let path_label = Label::builder()
-                    .label(path_key.as_str())
-                    .tooltip_text(path_key.as_str())
-                    .ellipsize(EllipsizeMode::Middle)
-                    .halign(Align::Start)
-                    .build();
-                path_label.add_css_class("caption");
-                path_label.add_css_class("dim-label");
-
-                browser_box.append(&path_label);
-                browser_box.append(&btn_browser);
-                row_box.append(&browser_box);
-            } else {
-                row_box.append(&btn_browser);
-            }
+            row_box.append(&browser_overlay);
 
             // 3. Right Side Controls
             if !is_installed {
                 let btn_remove = Button::builder()
                     .label("Remove")
                     .height_request(48)
-                    .valign(Align::Center)
+                    .valign(Align::Fill)
                     .build();
                 btn_remove.add_css_class("destructive-action");
 
@@ -327,7 +360,7 @@ fn draw_browser_list(
                         .orientation(Orientation::Horizontal)
                         .spacing(6)
                         .halign(Align::End)
-                        .valign(Align::Center)
+                        .valign(Align::Fill)
                         .build();
 
                     let actions_len = browser_setting.actions.len();
@@ -340,23 +373,40 @@ fn draw_browser_list(
                             .and_then(|a| a.name.clone())
                             .unwrap_or_else(|| action_config.id.clone());
 
-                        let action_wrapper = GtkBox::builder()
-                            .orientation(Orientation::Horizontal)
-                            .spacing(2)
+                        // Small font label constrained to 2 lines max
+                        let action_label = Label::builder()
+                            .label(&display_name)
+                            .wrap(true)
+                            .wrap_mode(WrapMode::WordChar)
+                            .justify(Justification::Center)
+                            .lines(2)
+                            .ellipsize(EllipsizeMode::End)
                             .valign(Align::Center)
+                            .vexpand(true)
+                            .build();
+                        action_label.add_css_class("caption");
+
+                        // Fixed 48x48 square button layout
+                        let btn_action = Button::builder()
+                            .tooltip_text(&display_name)
+                            .width_request(48)
+                            .height_request(48)
+                            .valign(Align::Fill)
+                            .build();
+
+                        // Like the browser button, the move buttons are layered on top of the action button
+                        let action_overlay = Overlay::builder()
+                            .child(&btn_action)
+                            .valign(Align::Fill)
                             .build();
 
                         if is_edit_mode && !action_config.is_visible {
-                            action_wrapper.set_opacity(0.4);
+                            action_overlay.set_opacity(0.4);
                         }
 
-                        // Left Move Button (Edit Mode)
                         if is_edit_mode {
-                            let btn_left = Button::builder()
-                                .label("◀")
-                                .height_request(48)
-                                .valign(Align::Center)
-                                .build();
+                            // Left Move Button
+                            let btn_left = Button::builder().label("◀").build();
                             btn_left.add_css_class("flat");
 
                             let s_c1 = settings_rc.clone();
@@ -375,29 +425,49 @@ fn draw_browser_list(
                                 }
                             });
 
-                            action_wrapper.append(&btn_left);
+                            // Right Move Button
+                            let btn_right = Button::builder().label("▶").build();
+                            btn_right.add_css_class("flat");
+
+                            let s_c2 = settings_rc.clone();
+                            let c_c2 = container.clone();
+                            let app_c2 = app.clone();
+                            let u_c2 = url.clone();
+                            let p_c2 = settings_path.clone();
+                            let path_k2 = path_key.clone();
+
+                            btn_right.connect_clicked(move |_| {
+                                if action_idx + 1 < actions_len {
+                                    if let Some(b) = s_c2.borrow_mut().browsers.get_mut(&path_k2) {
+                                        b.move_action(action_idx, action_idx + 1);
+                                    }
+                                    draw_browser_list(&c_c2, &app_c2, &u_c2, &s_c2, &p_c2, true);
+                                }
+                            });
+
+                            // The move buttons sit below the label so it keeps its full width
+                            let move_box = GtkBox::builder()
+                                .orientation(Orientation::Horizontal)
+                                .halign(Align::Center)
+                                .valign(Align::End)
+                                .margin_bottom(4)
+                                .build();
+                            move_box.append(&btn_left);
+                            move_box.append(&btn_right);
+
+                            let edit_content = GtkBox::builder()
+                                .orientation(Orientation::Vertical)
+                                .spacing(2)
+                                .valign(Align::Fill)
+                                .build();
+                            edit_content.append(&action_label);
+                            edit_content.append(&placeholder_for(&move_box));
+
+                            btn_action.set_child(Some(&edit_content));
+                            action_overlay.add_overlay(&move_box);
+                        } else {
+                            btn_action.set_child(Some(&action_label));
                         }
-
-                        // Small font label constrained to 2 lines max
-                        let action_label = Label::builder()
-                            .label(&display_name)
-                            .wrap(true)
-                            .wrap_mode(WrapMode::WordChar)
-                            .justify(Justification::Center)
-                            .lines(2)
-                            .ellipsize(EllipsizeMode::End)
-                            .valign(Align::Center)
-                            .build();
-                        action_label.add_css_class("caption");
-
-                        // Fixed 48x48 square button layout
-                        let btn_action = Button::builder()
-                            .child(&action_label)
-                            .tooltip_text(&display_name)
-                            .width_request(48)
-                            .height_request(48)
-                            .valign(Align::Center)
-                            .build();
 
                         let app_c = app.clone();
                         let url_c = url.clone();
@@ -426,37 +496,7 @@ fn draw_browser_list(
                             }
                         });
 
-                        action_wrapper.append(&btn_action);
-
-                        // Right Move Button (Edit Mode)
-                        if is_edit_mode {
-                            let btn_right = Button::builder()
-                                .label("▶")
-                                .height_request(48)
-                                .valign(Align::Center)
-                                .build();
-                            btn_right.add_css_class("flat");
-
-                            let s_c2 = settings_rc.clone();
-                            let c_c2 = container.clone();
-                            let app_c2 = app.clone();
-                            let u_c2 = url.clone();
-                            let p_c2 = settings_path.clone();
-                            let path_k2 = path_key.clone();
-
-                            btn_right.connect_clicked(move |_| {
-                                if action_idx + 1 < actions_len {
-                                    if let Some(b) = s_c2.borrow_mut().browsers.get_mut(&path_k2) {
-                                        b.move_action(action_idx, action_idx + 1);
-                                    }
-                                    draw_browser_list(&c_c2, &app_c2, &u_c2, &s_c2, &p_c2, true);
-                                }
-                            });
-
-                            action_wrapper.append(&btn_right);
-                        }
-
-                        actions_box.append(&action_wrapper);
+                        actions_box.append(&action_overlay);
                     }
 
                     row_box.append(&actions_box);
@@ -466,6 +506,16 @@ fn draw_browser_list(
             container.append(&row_box);
         }
     }
+}
+
+// An empty widget that always takes up the same space as `widget`, used to make room inside a
+// button for controls that are overlaid on top of it
+fn placeholder_for(widget: &impl IsA<Widget>) -> GtkBox {
+    let placeholder = GtkBox::new(Orientation::Horizontal, 0);
+    let size_group = SizeGroup::new(SizeGroupMode::Both);
+    size_group.add_widget(&placeholder);
+    size_group.add_widget(widget);
+    placeholder
 }
 
 fn load_icon(icon_name: &str) -> Image {
@@ -605,7 +655,18 @@ fn launch_on_host(url: &str, browser: &DesktopApp, custom_exec: Option<&str>) {
         .map(PathBuf::from)
         .unwrap_or_else(glib::home_dir);
 
-    if let Err(e) = host::spawn(&argv, &cwd) {
+    // Without an activation token the compositor won't let an already running browser take focus.
+    // Normally GIO passes one to launched apps, here it has to be requested and passed manually.
+    let mut envs = HashMap::new();
+    let app_info = AppInfo::create_from_commandline(&argv[0], Some(&browser.name), AppInfoCreateFlags::NONE).ok();
+    let token = gdk::Display::default()
+        .and_then(|display| display.app_launch_context().startup_notify_id(app_info.as_ref(), &[]));
+    if let Some(token) = token {
+        envs.insert("XDG_ACTIVATION_TOKEN".to_string(), token.to_string());
+        envs.insert("DESKTOP_STARTUP_ID".to_string(), token.to_string());
+    }
+
+    if let Err(e) = host::spawn(&argv, &cwd, envs) {
         eprintln!("Failed to launch {:?} on the host: {}", argv, e);
     }
 }

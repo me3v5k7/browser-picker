@@ -91,10 +91,10 @@ pub fn capture(script: &str, args: &[&str]) -> Option<Vec<u8>> {
     }
 }
 
-// Starts a process on the host (flatpak only). This calls the same D-Bus method that
-// flatpak-spawn uses, but returns as soon as the process is started, so the picker can quit
-// right away without the sandbox teardown killing the launch.
-pub fn spawn(argv: &[String], cwd: &Path) -> Result<(), glib::Error> {
+// Starts a process on the host (flatpak only) with `envs` added to its environment. This calls the
+// same D-Bus method that flatpak-spawn uses, but returns as soon as the process is started, so the
+// picker can quit right away without the sandbox teardown killing the launch.
+pub fn spawn(argv: &[String], cwd: &Path, envs: HashMap<String, String>) -> Result<(), glib::Error> {
     // The API expects nul-terminated bytestrings
     let bytestring = |bytes: &[u8]| {
         let mut bytes = bytes.to_vec();
@@ -105,7 +105,6 @@ pub fn spawn(argv: &[String], cwd: &Path) -> Result<(), glib::Error> {
     let cwd = bytestring(cwd.as_os_str().as_bytes());
     let argv: Vec<Vec<u8>> = argv.iter().map(|arg| bytestring(arg.as_bytes())).collect();
     let fds: HashMap<u32, glib::variant::Handle> = HashMap::new();
-    let envs: HashMap<String, String> = HashMap::new();
     let flags: u32 = 0;
 
     let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)?;
