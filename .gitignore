@@ -3,3 +3,5 @@ target/
 .flatpak-builder/
 build-dir/
 cargo-sources.json
+repo/
+*.flatpak
