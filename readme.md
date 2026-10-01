@@ -1,5 +1,6 @@
 This is a simple browser picker for linux written for me by me in rust
 
+![Screenshot of the browser-picker](./screenshot.jpg)
 
 how to compile for flatpak:
 1. flatpak install flathub org.gnome.Platform//47 org.gnome.Sdk//47 org.freedesktop.Sdk.Extension.rust-stable//24.08
